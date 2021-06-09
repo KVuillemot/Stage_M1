@@ -2,6 +2,22 @@ import dolfin as df
 import matplotlib.pyplot as plt 
 import mshr
 import time
+from matplotlib import rc, rcParams 
+
+# plot parameters
+plt.style.use('bmh') 
+params = {'axes.labelsize': 26,
+          'font.size': 22,
+          'axes.titlesize': 'large',
+          'legend.fontsize': 18,
+          'figure.titlesize': 24,
+          'xtick.labelsize': 18,
+          'ytick.labelsize': 18,
+          'text.usetex': True,
+          'figure.figsize':(10,8),          
+          'legend.shadow': True,
+          'patch.edgecolor': 'black'}
+plt.rcParams.update(params)
 
 # dolfin parameters
 df.parameters["ghost_mode"] = "shared_facet" 
@@ -11,7 +27,7 @@ df.parameters['allow_extrapolation'] = True
 df.parameters["form_compiler"]["representation"] = 'uflacs'
 
 # degree of interpolation for V and Vphi
-degV = 1
+degV = 2
 degPhi = 1 + degV
 
 # Function used to write in the outputs files
@@ -38,7 +54,7 @@ Time_assemble_phi, Time_solve_phi, Time_total_phi, error_l2_phi, error_h1_phi, h
 Time_assemble_standard, Time_solve_standard, Time_total_standard, error_h1_standard, error_l2_standard,  hh_standard = [], [], [], [], [], []
 
 # we compute the phi-fem for different sizes of cells
-start,end,step = 1,5,1
+start,end,step = 0,4,1
 for i in range(start,end,step): 
     print("Phi-fem iteration : ", i)
     # we define parameters and the "global" domain O
@@ -93,7 +109,7 @@ for i in range(start,end,step):
     ds = df.Measure("ds", mesh)
     dS = df.Measure("dS", mesh, subdomain_data = Facet)
     
-    sigma = 20 # Stabilization parameter
+    sigma = 20.0 # Stabilization parameter
     # Creation of the bilinear and linear forms using stabilization terms and boundary condition
     a = df.inner(df.grad(phi*w_h),df.grad(phi*v_h))*dx  - df.inner(df.grad(phi*w_h),n)*phi*v_h*ds \
         + sigma*h_avg*df.jump(df.grad(phi*w_h),n)*df.jump(df.grad(phi*v_h),n)*dS(1) \
@@ -157,53 +173,64 @@ for i in range(start, end, step):
     error_h1_standard.append((df.assemble(((df.grad(u_ex-u))**2)*df.dx)**(0.5))/(df.assemble(((df.grad(u_ex))**2)*df.dx)**(0.5)))
 
 # Plot results : error/precision, Time/precision, Time/error and Total_time/error
+
 plt.figure()
-plt.loglog(hh_phi,error_l2_phi,'-o', label=r'$\phi$-fem $L^2$ error')
-plt.loglog(hh_phi,error_h1_phi,'-o', label=r'$\phi$-fem $H^1$ error')
-plt.loglog(hh_standard,error_l2_standard, '-x',label=r'Standard fem $L^2$ error')
-plt.loglog(hh_standard,error_h1_standard, '-x',label=r'Standard fem $H^1$ error')
-plt.loglog(hh_phi,[hhh**2 for hhh in hh_phi], '.',label="Quadratic")
-plt.loglog(hh_phi, hh_phi, '.', label="Linear")
-plt.xlabel("h")
-plt.ylabel("error")
-plt.legend()
-plt.title(r'Relative error : $ \|\| u-u_h \|\| / \|\|u\|\| $ for $L^2$ and $H^1$ norms')
-plt.savefig('relative_error_P_{name0}.png'.format(name0=degV))
+plt.loglog(hh_phi,error_h1_phi,'o--', label=r'$\phi$-FEM $H^1$')
+plt.loglog(hh_phi,error_l2_phi,'o-', label=r'$\phi$-FEM $L^2$')
+plt.loglog(hh_standard,error_h1_standard, '--x',label=r'Std FEM $H^1$')
+plt.loglog(hh_standard,error_l2_standard, '-x',label=r'Std FEM $L^2$')
+if degV == 1 :
+    plt.loglog(hh_phi, hh_phi, '.', label="Linear")
+    plt.loglog(hh_phi,[hhh**2 for hhh in hh_phi], '.',label="Quadratic")
+elif degV == 2 :
+    plt.loglog(hh_phi,[hhh**2 for hhh in hh_phi], '.',label="Quadratic")
+    plt.loglog(hh_phi,[hhh**3 for hhh in hh_phi], '.',label="Cubic")
+
+plt.xlabel("$h$")
+plt.ylabel(r'$\frac{\|u-u_h\|}{\|u\|}$')
+plt.legend(loc='upper right', ncol=2)
+plt.title(r'Relative error : $ \frac{\|u-u_h\|}{\|u\|} $ for $L^2$ and $H^1$ norms', y=1.025)
+plt.tight_layout()
+plt.savefig('Dirichlet_non_homogene/relative_error_P_{name0}.png'.format(name0=degV))
 plt.show()
+
 plt.figure()
-plt.loglog(hh_phi,Time_assemble_phi, '-o',label=r'assemble $\phi$-FEM')
-plt.loglog(hh_phi,Time_solve_phi,'-o', label=r'solve $\phi$-FEM')
-plt.loglog(hh_standard,Time_assemble_standard, '-x',label=r' assemble standard FEM')
-plt.loglog(hh_standard,Time_solve_standard,'-x', label=r'solve standard FEM')
-plt.xlabel("h")
+plt.loglog(hh_phi,Time_assemble_phi, '-o',label=r'Assemble $\phi$-FEM')
+plt.loglog(hh_phi,Time_solve_phi,'--o', label=r'Solve $\phi$-FEM')
+plt.loglog(hh_standard,Time_assemble_standard, '-x',label=r'Assemble standard FEM')
+plt.loglog(hh_standard,Time_solve_standard,'--x', label=r'Solve standard FEM')
+plt.xlabel("$h$")
 plt.ylabel("Time (s)")
-plt.legend()
+plt.legend(loc='upper right')
 plt.title("Computing time")
-plt.savefig('Time_precision_P_{name0}.png'.format(name0=degV))
+plt.tight_layout()
+plt.savefig('Dirichlet_non_homogene/Time_precision_P_{name0}.png'.format(name0=degV))
 plt.show()
 plt.figure()
-plt.loglog(error_l2_phi,Time_assemble_phi, '-o',label=r' Assemble $\phi$-fem')
-plt.loglog(error_l2_phi,Time_solve_phi,'-o', label=r' Solve $\phi$-fem')
+plt.loglog(error_l2_phi,Time_assemble_phi, '-o',label=r'Assemble $\phi$-fem')
+plt.loglog(error_l2_phi,Time_solve_phi,'--o', label=r'Solve $\phi$-fem')
 plt.loglog(error_l2_standard,Time_assemble_standard,'-x', label="Assemble standard FEM")
-plt.loglog(error_l2_standard,Time_solve_standard,'-x', label="Solve standard FEM")
-plt.xlabel(r'$\| \|u-u_h \|\|_{L^2}$')
+plt.loglog(error_l2_standard,Time_solve_standard,'--x', label="Solve standard FEM")
+plt.xlabel(r'$\frac{\|u-u_h\|_{L^2}}{\|u\|_{L^2}}$')
 plt.ylabel("Time (s)")
 plt.title(r'Computing time')
-plt.legend()
-plt.savefig('Time_error_P_{name0}.png'.format(name0=degV))
+plt.legend(loc='upper right')
+plt.tight_layout()
+plt.savefig('Dirichlet_non_homogene/Time_error_P_{name0}.png'.format(name0=degV))
 plt.show()
 plt.figure()
 plt.loglog(error_l2_phi,Time_total_phi,'-o', label=r'$\phi$-fem')
 plt.loglog(error_l2_standard,Time_total_standard,'-x', label="Standard FEM")
-plt.xlabel(r'$\| \|u-u_h \|\|_{L^2}$')
+plt.xlabel(r'$\frac{\|u-u_h\|_{L^2}}{\|u\|_{L^2}}$')
 plt.ylabel("Time (s)")
 plt.title(r'Computing time')
-plt.legend()
-plt.savefig('Total_time_error_P_{name0}.png'.format(name0=degV))
+plt.legend(loc='upper right')
+plt.tight_layout()
+plt.savefig('Dirichlet_non_homogene/Total_time_error_P_{name0}.png'.format(name0=degV))
 plt.show()
-
+"""
 #  Write the output file for latex
-f = open('output_ghost_case1_dirichlet_P{name0}.txt'.format(name0=degV),'w')
+f = open('Dirichlet_non_homogene/output_ghost_P{name0}.txt'.format(name0=degV),'w')
 f.write('relative L2 norm phi fem: \n')	
 output_latex(f, hh_phi, error_l2_phi)
 f.write('relative H1 norm phi fem : \n')	
@@ -221,3 +248,4 @@ output_latex(f, error_l2_standard, Time_total_standard)
 f.write('relative H1 norm and time classic fem : \n')	
 output_latex(f, error_h1_standard, Time_total_standard)
 f.close()
+"""

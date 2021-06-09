@@ -3,15 +3,18 @@ import matplotlib.pyplot as plt
 import multiphenics as mph 
 import mshr
 import time
-from matplotlib import rc, rcParams 
+import vedo 
+from vedo.dolfin import plot, interactive
+from matplotlib import rc, rcParams
+from vedo.io import screenshot
+from vedo.plotter import closePlotter 
 
-# plot parameters
 plt.style.use('bmh') 
-params = {'axes.labelsize': 26,
+params = {'axes.labelsize': 28,
           'font.size': 22,
-          'axes.titlesize': 'large',
-          'legend.fontsize': 18,
-          'figure.titlesize': 24,
+          'axes.titlesize': 28,
+          'legend.fontsize': 20,
+          'figure.titlesize': 26,
           'xtick.labelsize': 18,
           'ytick.labelsize': 18,
           'text.usetex': True,
@@ -19,7 +22,6 @@ params = {'axes.labelsize': 26,
           'legend.shadow': True,
           'patch.edgecolor': 'black'}
 plt.rcParams.update(params)
-
 # dolfin parameters
 df.parameters["ghost_mode"] = "shared_facet" 
 df.parameters["form_compiler"]["cpp_optimize"] = True
@@ -30,6 +32,17 @@ df.parameters["form_compiler"]["representation"] = 'uflacs'
 # degree of interpolation for V and Vphi
 degV = 2
 degPhi = 2 + degV
+
+# functions and parameters for elasticity
+def sigma(u):
+    return lambda_ * df.div(u)*df.Identity(3) + 2.0*mu*epsilon(u)
+
+def epsilon(u):
+    return (1.0/2.0)*(df.grad(u) + df.grad(u).T)
+
+lambda_ = 1.25
+mu = 1.0
+rho = 1.0
 
 # Function used to write in the outputs files
 def output_latex(f,A,B):
@@ -46,32 +59,37 @@ Here we consider the case of circle centered in (0.5,0.5) of radius sqrt(2)/4, s
 """
 class phi_expr(df.UserExpression) : 
     def eval(self, value, x):
-        value[0] = -1.0/8.0 + (x[0]-0.5)**2 + (x[1]-0.5)**2 
+        value[0] = -1.0/8.0 + (x[0]-0.5)**2 + (x[1]-0.5)**2 + (x[2]-0.5)**2 
 
     def value_shape(self):
         return (2,)
-
+    
+def dirichlet(point):
+    x,y,z = point.x(), point.y(), point.z()
+    return x >= 0.5
+def neumann(point):
+    return not(dirichlet(point))
 # We create the lists that we'll use to store errors and computation time for the phi-fem and standard fem
 Time_assemble_phi, Time_solve_phi, Time_total_phi, error_l2_phi, error_h1_phi, hh_phi = [], [], [], [], [], []
 Time_assemble_standard, Time_solve_standard, Time_total_standard, error_h1_standard, error_l2_standard,  hh_standard = [], [], [], [], [], []
 
 # we compute the phi-fem for different sizes of cells
-start,end,step = 0,4,1
+start,end,step =3,4,1
 for i in range(start,end,step): 
     print("Phi-fem iteration : ", i)
     # we define parameters and the "global" domain O
-    H = 25*2**i
-    square = df.UnitSquareMesh(H,H)
+    H = 2*(i+2)
+    square = df.UnitCubeMesh(H,H,H)
     
     # We now define Omega using phi
     V_phi = df.FunctionSpace(square, "CG", degPhi)
     phi = phi_expr(element = V_phi.ufl_element())
     phi = df.interpolate(phi, V_phi)
-    Cell_omega = df.MeshFunction("size_t", square, 2)
+    Cell_omega = df.MeshFunction("size_t", square, square.topology().dim())
     Cell_omega.set_all(0)
     for cell in df.cells(square):  
-        v1,v2,v3 = df.vertices(cell)
-        if(phi(v1.point()) <= 0.0 or phi(v2.point()) <= 0.0 or phi(v3.point()) <= 0.0 or df.near(phi(v1.point()),0.0) or df.near(phi(v2.point()),0.0) or df.near(phi(v3.point()),0.0)):
+        v1,v2,v3,v4 = df.vertices(cell)
+        if(phi(v1.point()) <= 0.0 or phi(v2.point()) <= 0.0 or phi(v3.point()) <= 0.0 or df.near(phi(v1.point()),0.0) or df.near(phi(v2.point()),0.0) or df.near(phi(v3.point()),0.0)) or phi(v4.point()) <= 0.0 or df.near(phi(v4.point()),0.0):
             Cell_omega[cell] = 1
     mesh = df.SubMesh(square, Cell_omega, 1) 
     hh_phi.append(mesh.hmax()) # store the size of each element for this iteration  
@@ -83,40 +101,66 @@ for i in range(start,end,step):
     
     # Selection of cells and facets on the boundary
     mesh.init(1,2) 
+    Cell = df.MeshFunction("size_t", mesh, mesh.topology().dim())  
     Facet = df.MeshFunction("size_t", mesh, mesh.topology().dim()-1) 
-    Cell = df.MeshFunction("size_t", mesh, 2)  
-    cell_sub = df.MeshFunction("bool", mesh, 2)
-    facet_sub = df.MeshFunction("bool", mesh, 1)
-    vertices_sub = df.MeshFunction("bool", mesh, 0)
+
+    cell_sub = df.MeshFunction("bool", mesh, mesh.topology().dim())
+    facet_sub = df.MeshFunction("bool", mesh, mesh.topology().dim()-1)
+    edge_sub = df.MeshFunction("bool", mesh, mesh.topology().dim()-2)    
+    vertices_sub = df.MeshFunction("bool", mesh, mesh.topology().dim()-3)
     Facet.set_all(0)
     Cell.set_all(0)
     cell_sub.set_all(0)
     facet_sub.set_all(0)
+    edge_sub.set_all(0)
     vertices_sub.set_all(0)
 
     for cell in df.cells(mesh) :
         for facet in df.facets(cell): 
-            v1,v2 = df.vertices(facet) 
-            if(phi(v1.point())*phi(v2.point()) <= 0.0 or df.near(phi(v1.point())*phi(v2.point()),0.0)) : 
-                Cell[cell] = 1  
-                cell_sub[cell] = 1
-                for facett in df.facets(cell):  
-                    Facet[facett] = 1  
-                    facet_sub[facett] = 1
-                    v1, v2 = df.vertices(facett)
-                    vertices_sub[v1], vertices_sub[v2] = 1,1
+            v1,v2,v3 = df.vertices(facet) 
+            if(phi(v1.point())*phi(v2.point()) <= 0.0 or df.near(phi(v1.point())*phi(v2.point()),0.0) or phi(v1.point())*phi(v3.point()) <= 0.0 or df.near(phi(v1.point())*phi(v3.point()),0.0) or phi(v3.point())*phi(v2.point()) <= 0.0 or df.near(phi(v3.point())*phi(v2.point()),0.0)) : 
+            # check if the cell is a cell for Dirichlet condition or Neumann condition and add every cells, facets, vertices to the restricition
+                
+                # Cells for dirichlet condition
+                if dirichlet(v1.point()) and dirichlet(v2.point()) and dirichlet(v3.point()): 
+                    Cell[cell] = 2
+                    cell_sub[cell] = 1
+                    for facett in df.facets(cell):  
+                        Facet[facett] = 2
+                        facet_sub[facett] = 1
+                        for edge in df.edges(facett):
+                            edge_sub[edge] = 1
+                        v1, v2, v3 = df.vertices(facett)
+                        vertices_sub[v1], vertices_sub[v2], vertices_sub[v3] = 1, 1, 1
+    
+                # Cells for Neumann condition
+                else : 
+                    Cell[cell] = 1
+                    cell_sub[cell] = 1
+                    for facett in df.facets(cell):  
+                        Facet[facett] = 1
+                        facet_sub[facett] = 1
+                        for edge in df.edges(facett):
+                            edge_sub[edge] = 1
+                        v1, v2, v3 = df.vertices(facett)
+                        vertices_sub[v1], vertices_sub[v2], vertices_sub[v3] = 1, 1, 1
+    
+    File3 = df.File("sub.rtc.xml/mesh_function_3.xml")
+    File3 << cell_sub
     File2 = df.File("sub.rtc.xml/mesh_function_2.xml")
-    File2 << cell_sub
+    File2 << facet_sub
     File1 = df.File("sub.rtc.xml/mesh_function_1.xml")
-    File1 << facet_sub
+    File1 << edge_sub    
     File0 = df.File("sub.rtc.xml/mesh_function_0.xml")
     File0 << vertices_sub
     
     # Beginning of variationnal problem resolution
     yp_res = mph.MeshRestriction(mesh,"sub.rtc.xml")
-    V = df.FunctionSpace(mesh, "CG", degV)
-    Z = df.VectorFunctionSpace(mesh,"CG",degV, dim = 2)
-    Q = df.FunctionSpace(mesh,"DG",degV-1)
+    V = df.VectorFunctionSpace(mesh, 'CG', degV, dim=3)
+    u_ex = df.Expression(('sin(x[0]) * exp(x[1])', 'sin(x[1]) * exp(x[0])', 'exp(x[2])'), degree = 6, domain = mesh)
+    f = - df.div(sigma(u_ex))   
+    Z = df.TensorFunctionSpace(mesh,"CG",degV, shape = (3,3))
+    Q = df.VectorFunctionSpace(mesh,"DG",degV-1, dim = 3)
     W = mph.BlockFunctionSpace([V,Z,Q], restrict=[None,yp_res,yp_res])
     uyp = mph.BlockTrialFunction(W)
     (u, y, p) = mph.block_split(uyp)
@@ -124,48 +168,52 @@ for i in range(start,end,step):
     (v, z, q) = mph.block_split(vzq)
 
     dx = df.Measure("dx", mesh, subdomain_data = Cell)
-    ds = df.Measure("ds", mesh)
+    ds = df.Measure("ds", mesh, subdomain_data = Facet) # considering facets to apply Dirichlet or Neumann for the boundary condition
     dS = df.Measure("dS", mesh, subdomain_data = Facet)
 
-    gamma_div, gamma_u, gamma_p, sigma = 1.0, 1.0, 1.0, 0.01
+    gamma_div, gamma_u, gamma_p, sigma_p, gamma_D, sigma_D = 1.0, 1.0, 1.0, 0.01, 20.0, 20.0
     h = df.CellDiameter(mesh)
     n = df.FacetNormal(mesh)
-    u_ex = df.Expression("sin(x[0])*exp(x[1])", degree = 6, domain = mesh)
-    f = -df.div(df.grad(u_ex)) + u_ex
-    g = df.inner(df.grad(u_ex),df.grad(phi))/(df.inner(df.grad(phi),df.grad(phi))**0.5) + u_ex*phi
-    
+    g = df.dot(sigma(u_ex),df.grad(phi))/(df.inner(df.grad(phi),df.grad(phi))**0.5) \
+        + u_ex*phi
+    u_D = u_ex * (1 + phi)
     # Construction of the bilinear and linear forms
-    boundary_penalty = sigma*df.avg(h)*df.inner(df.jump(df.grad(u),n), df.jump(df.grad(v),n))*dS(1) 
-        
+    boundary_penalty = sigma_p*df.avg(h)*df.inner(df.jump(sigma(u),n), df.jump(sigma(v),n))*dS(1) \
+                     + sigma_D*df.avg(h)*df.inner(df.jump(sigma(u),n), df.jump(sigma(v),n))*dS(2) \
+                     + sigma_D*h**2*(df.inner(- df.div(sigma(u)) ,- df.div(sigma(v)) ))*dx(2)
+    
     phi_abs = df.inner(df.grad(phi),df.grad(phi))**0.5
 
-    auv = df.inner(df.grad(u), df.grad(v))*dx  + u*v*dx\
-        + gamma_u*df.inner(df.grad(u),df.grad(v))*dx(1) \
+    auv = df.inner(sigma(u), epsilon(v))*dx  \
+        + gamma_u*df.inner(sigma(u),sigma(v))*dx(1) \
         + boundary_penalty \
-        + gamma_div*u*v*dx(1)
+        + gamma_D*h**(-2)*df.inner(u,v)*dx(2) \
+        - df.inner(df.dot(sigma(u),n),v)*ds(2) 
 
-    auz = gamma_u*df.inner(df.grad(u),z)*dx(1) + gamma_div*u*df.div(z)*dx(1) 
-    auq = 0.0 
+    auz = gamma_u*df.inner(sigma(u),z)*dx(1) 
+    auq = - gamma_D*h**(-3)*df.dot(u,q*phi)*dx(2)  
     
-    ayv = df.inner(df.dot(y,n),v)*ds + gamma_u*df.inner(y,df.grad(v))*dx(1)  + gamma_div*df.div(y)*v*dx(1)
+    ayv = df.inner(df.dot(y,n),v)*ds(1) + gamma_u*df.inner(y,sigma(v))*dx(1) 
         
     ayz = gamma_u*df.inner(y,z)*dx(1) + gamma_div*df.inner(df.div(y), df.div(z))*dx(1) \
         + gamma_p*h**(-2)*df.inner(df.dot(y,df.grad(phi)), df.dot(z,df.grad(phi)))*dx(1)
     ayq = gamma_p*h**(-3)*df.inner(df.dot(y,df.grad(phi)), q*phi)*dx(1)
     
-    apv = 0.0
+    apv = - gamma_D*h**(-3)*df.dot(v,p*phi)*dx(2) 
     apz = gamma_p*h**(-3)*df.inner(p*phi, df.dot(z,df.grad(phi)))*dx(1)
-    apq = gamma_p*h**(-4)*df.inner(p*phi,q*phi)*dx(1) 
+    apq = gamma_p*h**(-4)*df.inner(p*phi,q*phi)*dx(1) \
+        + gamma_D*h**(-4)*df.inner(p*phi,q*phi)*dx(2)
     
     lv = df.inner(f,v)*dx  \
-        + gamma_div*f*v*dx(1)
+        + sigma_D*h**2*df.inner(f, - df.div(sigma(v)))*dx(2) \
+        + gamma_D*h**(-2)*df.dot(u_D,v)*dx(2)
     lz = df.inner(f, df.div(z))*dx(1) - gamma_p*h**(-2)*df.inner(g*phi_abs, df.dot(z,df.grad(phi)))*dx(1)
-    lq = - gamma_p*h**(-3)*df.inner(g*phi_abs,q*phi)*dx(1) 
+    lq = - gamma_p*h**(-3)*df.inner(g*phi_abs,q*phi)*dx(1) - gamma_D*h**(-3)*df.inner(u_D,q*phi)*dx(2)
     
     a = [[auv,auz,auq],
          [ayv,ayz,ayq],
          [apv,apz,apq]]
-    l = [lv,lz,lq]
+    l = [lv,lz,lq]  
     start_assemble = time.time()
     A = mph.block_assemble(a)
     B = mph.block_assemble(l)
@@ -177,47 +225,67 @@ for i in range(start,end,step):
     end_solve = time.time()
     Time_solve_phi.append(end_solve-start_solve)
     Time_total_phi.append(Time_assemble_phi[-1] + Time_solve_phi[-1])
-    u_h = UU[0]
+    u_h = df.interpolate(UU[0],V)
+    if i == end -1 :
+        
+        plot(mesh, u_h, N = 3, interactive = False, at = 0, text = r'$\phi$-fem')
     # Compute and store relative error for H1 and L2 norms
-    error_l2_phi.append((df.assemble((((u_ex-u_h))**2)*dx)**(0.5))/(df.assemble((((u_ex))**2)*dx)**(0.5)))            
-    error_h1_phi.append((df.assemble(((df.grad(u_ex-u_h))**2)*dx)**(0.5))/(df.assemble(((df.grad(u_ex))**2)*dx)**(0.5)))
+    error_l2_phi.append(df.sqrt(df.assemble((df.inner(u_ex-u_h,u_ex-u_h)*df.dx)))/df.sqrt(df.assemble((df.inner(u_ex,u_ex))*df.dx)))            
+    error_h1_phi.append(df.sqrt(df.assemble((df.inner(df.grad(u_ex-u_h),df.grad(u_ex-u_h))*df.dx)))/df.sqrt(df.assemble((df.inner(df.grad(u_ex),df.grad(u_ex)))*df.dx))) 
 
 # Computation of the standard FEM       
-domain = mshr.Circle(df.Point(0.5,0.5),df.sqrt(2.0)/4.0) # create of the domain
+domain = mshr.Sphere(df.Point(0.5,0.5,0.5),df.sqrt(2.0)/4.0) # create of the domain
 for i in range(start, end, step):
-    H = 25*2**(i-1) # to have approximately the same precision as in the phi-fem computation
+    H = 2*(i+1) # to have approximately the same precision as in the phi-fem computation
     mesh = mshr.generate_mesh(domain,H)
+    """
+    if i == 2 :
+        disc = vedo.shapes.Disc((0.5,0.5), df.sqrt(2.0)/4.0, df.sqrt(2.0)/4.0 + 0.002, c = 'black', res = 200)
+        plot(mesh, c = 'yellow')
+        plot(disc, add = True )
+        screenshot('standard_fem_mesh2.png')     
+        closePlotter() 
+    """
     print("Standard fem iteration : ", i)
     # FunctionSpace P1
-    V = df.FunctionSpace(mesh, 'CG', degV)  
-    v = df.TestFunction(V)
+    u_ex = df.Expression(('sin(x[0]) * exp(x[1])', 'sin(x[1]) * exp(x[0])', 'exp(x[2])'), degree = 6, domain = mesh)
+    V_phi = df.FunctionSpace(mesh, "CG", degPhi)
+    phi = phi_expr(element = V_phi.ufl_element())
+    phi = df.interpolate(phi, V_phi)
+    f = - df.div(sigma(u_ex)) 
+    V = df.VectorFunctionSpace(mesh, 'CG', degV, dim=3)
+    boundary = 'on_boundary && x[0] >= 0.5'
+    u_D = u_ex * ( 1 + phi)
+    bc = df.DirichletBC(V, u_D, boundary)
     u = df.TrialFunction(V)
-    u_ex = df.Expression("sin(x[0])*exp(x[1])", degree = 6, domain = mesh)
-    f = - df.div(df.grad(u_ex)) + u_ex 
-    phi = df.Expression("-1.0/8.0 + pow(x[0]-0.5,2) + pow(x[1]-0.5,2)", degree = 6, domain = mesh)
-    g = df.inner(df.grad(u_ex),df.grad(phi))/df.inner(df.grad(phi),df.grad(phi))**(0.5) + u_ex*phi
-    # Resolution of the variationnal problem
-    a = df.inner(df.grad(u), df.grad(v))*df.dx + u*v*df.dx 
-    l = f*v*df.dx + g*v*df.ds
+    v = df.TestFunction(V)
+    n = df.FacetNormal(mesh)
+    g = df.dot(sigma(u_ex),df.grad(phi))/(df.inner(df.grad(phi),df.grad(phi))**0.5) \
+        + u_ex*phi
+    a = df.inner(sigma(u), epsilon(v))*df.dx 
+    L = df.dot(f,v)*df.dx + df.dot(g,v)*df.ds
     start_assemble = time.time()
     A = df.assemble(a)
-    B = df.assemble(l)
+    B = df.assemble(L)
     end_assemble = time.time()
     Time_assemble_standard.append(end_assemble-start_assemble)
-    start_standard = time.time()
     u = df.Function(V)
-    df.solve(A,u.vector(),B)
-    end_standard = time.time()
-    u_h = u
-    Time_solve_standard.append(end_standard-start_standard)
+    bc.apply(A,B) # apply Dirichlet boundary conditions to the problem    
+    start_solve = time.time()
+    df.solve(A, u.vector(), B)
+    end_solve = time.time()
+    Time_solve_standard.append(end_solve-start_solve)
     Time_total_standard.append(Time_assemble_standard[-1] + Time_solve_standard[-1])
+    #plot(u, at = 1, warpZfactor = 4, interactive=False, text = r'standard fem with ' + '\n' + 'h = ' + str(mesh.hmax())) 
+    u_h = df.interpolate(u, V)
+    if i == end -1:
+        plot(u_h, at = 1, text = 'standard fem')
+        plot(mesh, u_ex, at = 2, text = 'exact solution')
     # Compute and store h and L2 H1 errors
     hh_standard.append(mesh.hmax())
-    error_l2_standard.append((df.assemble((((u_ex-u_h))**2)*df.dx)**(0.5))/(df.assemble((((u_ex))**2)*df.dx)**(0.5)))            
-    error_h1_standard.append((df.assemble(((df.grad(u_ex-u_h))**2)*df.dx)**(0.5))/(df.assemble(((df.grad(u_ex))**2)*df.dx)**(0.5)))
-
+    error_l2_standard.append(df.sqrt(df.assemble((df.inner(u_ex-u_h,u_ex-u_h)*df.dx)))/df.sqrt(df.assemble((df.inner(u_ex,u_ex))*df.dx)))            
+    error_h1_standard.append(df.sqrt(df.assemble((df.inner(df.grad(u_ex-u_h),df.grad(u_ex-u_h))*df.dx)))/df.sqrt(df.assemble((df.inner(df.grad(u_ex),df.grad(u_ex)))*df.dx))) 
 # Plot results : error/precision, Time/precision, Time/error and Total_time/error
-
 plt.figure()
 plt.loglog(hh_phi,error_h1_phi,'o--', label=r'$\phi$-FEM $H^1$')
 plt.loglog(hh_phi,error_l2_phi,'o-', label=r'$\phi$-FEM $L^2$')
@@ -235,7 +303,7 @@ plt.ylabel(r'$\frac{\|u-u_h\|}{\|u\|}$')
 plt.legend(loc='upper right', ncol=2)
 plt.title(r'Relative error : $ \frac{\|u-u_h\|}{\|u\|} $ for $L^2$ and $H^1$ norms', y=1.025)
 plt.tight_layout()
-plt.savefig('Neumann/relative_error_P_{name0}.png'.format(name0=degV))
+#plt.savefig('Elasticity_mixed/relative_error_P_{name0}.png'.format(name0=degV))
 plt.show()
 
 plt.figure()
@@ -248,7 +316,7 @@ plt.ylabel("Time (s)")
 plt.legend(loc='upper right')
 plt.title("Computing time")
 plt.tight_layout()
-plt.savefig('Neumann/Time_precision_P_{name0}.png'.format(name0=degV))
+#plt.savefig('Elasticity_mixed/Time_precision_P_{name0}.png'.format(name0=degV))
 plt.show()
 plt.figure()
 plt.loglog(error_l2_phi,Time_assemble_phi, '-o',label=r'Assemble $\phi$-fem')
@@ -260,7 +328,7 @@ plt.ylabel("Time (s)")
 plt.title(r'Computing time')
 plt.legend(loc='upper right')
 plt.tight_layout()
-plt.savefig('Neumann/Time_error_P_{name0}.png'.format(name0=degV))
+#plt.savefig('Elasticity_mixed/Time_error_P_{name0}.png'.format(name0=degV))
 plt.show()
 plt.figure()
 plt.loglog(error_l2_phi,Time_total_phi,'-o', label=r'$\phi$-fem')
@@ -270,10 +338,11 @@ plt.ylabel("Time (s)")
 plt.title(r'Computing time')
 plt.legend(loc='upper right')
 plt.tight_layout()
-plt.savefig('Neumann/Total_time_error_P_{name0}.png'.format(name0=degV))
+#plt.savefig('Elasticity_mixed/Total_time_error_P_{name0}.png'.format(name0=degV))
 plt.show()
+"""
 #  Write the output file for latex
-f = open('Neumann/output_ghost_P{name0}.txt'.format(name0=degV),'w')
+f = open('Elasticity_mixt/output_ghost_case1_Neumann_P{name0}.txt'.format(name0=degV),'w')
 f.write('relative L2 norm phi fem: \n')	
 output_latex(f, hh_phi, error_l2_phi)
 f.write('relative H1 norm phi fem : \n')	
@@ -291,3 +360,4 @@ output_latex(f, error_l2_standard, Time_total_standard)
 f.write('relative H1 norm and time classic fem : \n')	
 output_latex(f, error_h1_standard, Time_total_standard)
 f.close()
+"""
