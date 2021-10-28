@@ -1,4 +1,4 @@
-# Stage_M1
+# Stage_M1_Phi_FEM
 This repository contains some codes in relation with phi-FEM. These codes were developped during my internship in the MIMESIS team.
 
 The different codes are made using `FEniCS` and `multiphenics` to compute the FEM.
